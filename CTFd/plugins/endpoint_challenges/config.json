@@ -1,0 +1,4 @@
+{
+    "name": "CTFd Endpoint Challenges Plugin",
+    "route": "/admin/endpoint_challenges"
+}

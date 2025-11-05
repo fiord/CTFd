@@ -34,3 +34,4 @@ Pillow==11.3.0
 cffi==1.17.1
 six==1.17.0
 urllib3==2.5.0
+google-cloud-compute==1.18.0

@@ -14,15 +14,20 @@ services:
       - ACCESS_LOG=-
       - ERROR_LOG=-
       - REVERSE_PROXY=true
+      - GCP_PROJECT=fiord-220408
+      - GCP_ZONE=us-east1-c
+      - GOOGLE_APPLICATION_CREDENTIALS=/var/secrets/gcp-key.json
+      - GCP_MACHINE_TYPE=e2-micro
     volumes:
       - .data/CTFd/logs:/var/log/CTFd
       - .data/CTFd/uploads:/var/uploads
       - .:/opt/CTFd:ro
+      - .secrets:/var/secrets:ro
     depends_on:
       - db
     networks:
-        default:
-        internal:
+      default:
+      internal:
 
   nginx:
     image: nginx:stable
@@ -46,19 +51,26 @@ services:
     volumes:
       - .data/mysql:/var/lib/mysql
     networks:
-        internal:
+      internal:
     # This command is required to set important mariadb defaults
-    command: [mysqld, --character-set-server=utf8mb4, --collation-server=utf8mb4_unicode_ci, --wait_timeout=28800, --log-warnings=0]
+    command:
+      [
+        mysqld,
+        --character-set-server=utf8mb4,
+        --collation-server=utf8mb4_unicode_ci,
+        --wait_timeout=28800,
+        --log-warnings=0,
+      ]
 
   cache:
     image: redis:4
     restart: always
     volumes:
-    - .data/redis:/data
+      - .data/redis:/data
     networks:
-        internal:
+      internal:
 
 networks:
-    default:
-    internal:
-        internal: true
+  default:
+  internal:
+    internal: true
