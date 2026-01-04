@@ -50,6 +50,90 @@ class EndpointValueChallenge(BaseChallenge):
     )
     challenge_model = EndpointChallenge
 
+    @staticmethod
+    def cleanup_old_instances():
+        """
+        Cleanup GCE instances older than TTL (default: 3 hours).
+        Can be called from CLI, cron, or scheduled tasks.
+        Returns dict with cleanup results.
+        """
+        gcp_project = os.getenv('GCP_PROJECT')
+        gcp_zone = os.getenv('GCP_ZONE')
+
+        if not gcp_project or not gcp_zone:
+            return {
+                "success": False, 
+                "error": "GCP_PROJECT and GCP_ZONE environment variables must be set",
+                "deleted": 0,
+                "failed": 0
+            }
+
+        try:
+            ttl_hours = int(os.getenv('GCE_TTL_HOURS', '3'))
+        except Exception:
+            ttl_hours = 3
+
+        deleted_count = 0
+        failed_count = 0
+        deleted_instances = []
+        failed_instances = []
+
+        try:
+            credentials, project = google.auth.default()
+            compute_client = compute_v1.InstancesClient(credentials=credentials)
+
+            now = datetime.now(timezone.utc)
+            ttl_filter = "labels.app = ctfd-endpoint"
+            
+            instances_to_delete = []
+            for inst in compute_client.list(project=gcp_project, zone=gcp_zone, filter=ttl_filter):
+                # Parse creation timestamp
+                try:
+                    created = datetime.strptime(inst.creation_timestamp, "%Y-%m-%dT%H:%M:%S.%f%z")
+                except Exception:
+                    try:
+                        created = datetime.strptime(inst.creation_timestamp, "%Y-%m-%dT%H:%M:%S%z")
+                    except Exception:
+                        created = None
+                
+                if created and (now - created) > timedelta(hours=ttl_hours):
+                    instances_to_delete.append((inst.name, created, now - created))
+
+            # Delete old instances
+            for inst_name, created_time, age in instances_to_delete:
+                try:
+                    op = compute_client.delete(project=gcp_project, zone=gcp_zone, instance=inst_name)
+                    op.result(timeout=60)  # Wait up to 60 seconds
+                    deleted_count += 1
+                    deleted_instances.append({
+                        "name": inst_name,
+                        "created": created_time.isoformat(),
+                        "age_hours": age.total_seconds() / 3600
+                    })
+                except Exception as e:
+                    failed_count += 1
+                    failed_instances.append({
+                        "name": inst_name,
+                        "error": str(e)
+                    })
+
+            return {
+                "success": True,
+                "deleted": deleted_count,
+                "failed": failed_count,
+                "deleted_instances": deleted_instances,
+                "failed_instances": failed_instances,
+                "ttl_hours": ttl_hours
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "deleted": deleted_count,
+                "failed": failed_count
+            }
+
     @classmethod
     def read(cls, challenge):
         """
@@ -126,33 +210,9 @@ class EndpointValueChallenge(BaseChallenge):
             credentials, project = google.auth.default()
             compute_client = compute_v1.InstancesClient(credentials=credentials)
 
-            # TTL cleanup: delete instances older than 3 hours (default)
-            try:
-                ttl_hours = int(os.getenv('GCE_TTL_HOURS', '3'))
-            except Exception:
-                ttl_hours = 3
-            try:
-                now = datetime.now(timezone.utc)
-                # filter only our app instances
-                ttl_filter = "labels.app = ctfd-endpoint"
-                for inst in compute_client.list(project=gcp_project, zone=gcp_zone, filter=ttl_filter):
-                    # creation_timestamp is RFC3339 string
-                    try:
-                        created = datetime.strptime(inst.creation_timestamp, "%Y-%m-%dT%H:%M:%S.%f%z")
-                    except Exception:
-                        try:
-                            created = datetime.strptime(inst.creation_timestamp, "%Y-%m-%dT%H:%M:%S%z")
-                        except Exception:
-                            created = None
-                    if created and (now - created) > timedelta(hours=ttl_hours):
-                        try:
-                            op = compute_client.delete(project=gcp_project, zone=gcp_zone, instance=inst.name)
-                            op.result()
-                        except Exception:
-                            pass
-            except Exception:
-                # TTL cleanup best-effort
-                pass
+            # TTL cleanup: delete instances older than configured TTL
+            # Use the static method for cleanup
+            cls.cleanup_old_instances()
 
             # Enforce 1 instance per user (list instances with our labels)
             try:
@@ -322,6 +382,79 @@ def load(app):
     # Also register our frontend enhancer so it's loaded on user-facing pages
     register_script("/plugins/endpoint_challenges/assets/view.js")
 
+    # Setup automatic cleanup scheduler if enabled
+    auto_cleanup_enabled = os.getenv('GCE_AUTO_CLEANUP_ENABLED', 'false').lower() in ('true', '1', 'yes')
+    
+    if auto_cleanup_enabled:
+        try:
+            from apscheduler.schedulers.background import BackgroundScheduler
+            from apscheduler.triggers.interval import IntervalTrigger
+            
+            # Get cleanup interval in minutes (default: 30 minutes)
+            try:
+                cleanup_interval = int(os.getenv('GCE_CLEANUP_INTERVAL_MINUTES', '30'))
+            except Exception:
+                cleanup_interval = 30
+            
+            # Create scheduler if not already exists
+            if not hasattr(app, 'endpoint_cleanup_scheduler'):
+                scheduler = BackgroundScheduler(daemon=True)
+                
+                # Add cleanup job
+                scheduler.add_job(
+                    func=lambda: cleanup_job_wrapper(app),
+                    trigger=IntervalTrigger(minutes=cleanup_interval),
+                    id='gce_instance_cleanup',
+                    name='GCE Instance Cleanup',
+                    replace_existing=True
+                )
+                
+                scheduler.start()
+                app.endpoint_cleanup_scheduler = scheduler
+                app.logger.info(f"GCE auto-cleanup scheduled every {cleanup_interval} minutes")
+                
+                # Cleanup on app shutdown
+                import atexit
+                atexit.register(lambda: scheduler.shutdown())
+        except ImportError:
+            app.logger.warning("APScheduler not installed. Auto-cleanup disabled. Install with: pip install apscheduler")
+        except Exception as e:
+            app.logger.error(f"Failed to setup auto-cleanup scheduler: {e}")
+
+    # Register CLI command for cleanup
+    import click
+    
+    @app.cli.group()
+    def endpoint_challenges():
+        """Endpoint Challenges management commands"""
+        pass
+    
+    @endpoint_challenges.command("cleanup")
+    def cleanup_instances():
+        """Cleanup old GCE instances based on TTL"""
+        click.echo("Running GCE instance cleanup...")
+        result = EndpointValueChallenge.cleanup_old_instances()
+        
+        if result["success"]:
+            click.echo(f"✓ Cleanup completed successfully")
+            click.echo(f"  Deleted: {result['deleted']} instances")
+            click.echo(f"  Failed: {result['failed']} instances")
+            click.echo(f"  TTL: {result['ttl_hours']} hours")
+            
+            if result["deleted_instances"]:
+                click.echo("\nDeleted instances:")
+                for inst in result["deleted_instances"]:
+                    click.echo(f"  - {inst['name']} (age: {inst['age_hours']:.2f}h)")
+            
+            if result["failed_instances"]:
+                click.echo("\nFailed deletions:")
+                for inst in result["failed_instances"]:
+                    click.echo(f"  - {inst['name']}: {inst['error']}")
+        else:
+            click.echo(f"✗ Cleanup failed: {result.get('error', 'Unknown error')}")
+            click.echo(f"  Deleted: {result['deleted']} instances")
+            click.echo(f"  Failed: {result['failed']} instances")
+
     @app.route("/api/v1/challenges/<int:challenge_id>/create_endpoint", methods=["POST"])
     def create_endpoint(challenge_id):
         user = get_current_user()
@@ -336,3 +469,16 @@ def load(app):
         return jsonify(result)
 
     return app
+
+
+def cleanup_job_wrapper(app):
+    """Wrapper to run cleanup with app context"""
+    with app.app_context():
+        try:
+            result = EndpointValueChallenge.cleanup_old_instances()
+            if result["success"]:
+                app.logger.info(f"Auto-cleanup: deleted {result['deleted']} instances, failed {result['failed']}")
+            else:
+                app.logger.error(f"Auto-cleanup failed: {result.get('error', 'Unknown error')}")
+        except Exception as e:
+            app.logger.error(f"Auto-cleanup error: {e}")

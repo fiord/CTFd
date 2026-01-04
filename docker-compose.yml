@@ -17,6 +17,8 @@ services:
       - GCP_ZONE=us-east1-c
       - GOOGLE_APPLICATION_CREDENTIALS=/var/secrets/gcp-key.json
       - GCP_MACHINE_TYPE=e2-micro
+      - GCE_TTL_HOURS=1
+      - GCE_AUTO_CLEANUP_ENABLED=true
     volumes:
       - .data/CTFd/logs:/var/log/CTFd
       - .data/CTFd/uploads:/var/uploads
