@@ -1,0 +1,57 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: ctfd
+  labels:
+    cloud.googleapis.com/location: us-west1
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "10"
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/startup-cpu-boost: "true"
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      serviceAccountName: PROJECT_ID-compute@developer.gserviceaccount.com
+      containers:
+        - image: gcr.io/PROJECT_ID/ctfd:latest
+          ports:
+            - name: http1
+              containerPort: 8000
+          resources:
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          env:
+            - name: REVERSE_PROXY
+              value: "true"
+            - name: WORKERS
+              value: "4"
+            - name: WORKER_CLASS
+              value: "gevent"
+            - name: SKIP_DB_PING
+              value: "false"
+            - name: UPLOAD_FOLDER
+              value: "/var/uploads"
+            - name: LOG_FOLDER
+              value: "/var/log/CTFd"
+            - name: ACCESS_LOG
+              value: "-"
+            - name: ERROR_LOG
+              value: "-"
+          envFrom:
+            - secretRef:
+                name: ctfd-database-url
+                key: latest
+            - secretRef:
+                name: ctfd-redis-url
+                key: latest
+            - secretRef:
+                name: ctfd-secret-key
+                key: latest
+  traffic:
+    - percent: 100
+      latestRevision: true

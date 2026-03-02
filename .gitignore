@@ -82,3 +82,9 @@ node_modules/
 flask_profiler.sql
 
 .secrets
+
+# Cloud Run deployment files
+.env.cloudrun
+.env.local
+*.env.local
+gcp-key.json

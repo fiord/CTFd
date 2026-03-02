@@ -1,0 +1,60 @@
+steps:
+  # Build the container image
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build-image"
+    args:
+      - "build"
+      - "-t"
+      - "gcr.io/$PROJECT_ID/$_SERVICE_NAME:latest"
+      - "-f"
+      - "Dockerfile.cloudrun"
+      - "."
+    timeout: "1200s"
+
+  # Push the container image to Container Registry
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-image-latest"
+    waitFor: ["build-image"]
+    args:
+      - "push"
+      - "gcr.io/$PROJECT_ID/$_SERVICE_NAME:latest"
+
+  # Deploy container image to Cloud Run
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "deploy-cloudrun"
+    waitFor: ["push-image-latest"]
+    entrypoint: gcloud
+    args:
+      - "run"
+      - "deploy"
+      - "$_SERVICE_NAME"
+      - "--image=gcr.io/$PROJECT_ID/$_SERVICE_NAME:latest"
+      - "--region=$_REGION"
+      - "--platform=managed"
+      - "--service-account=ctfd-run-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+      - "--allow-unauthenticated"
+      - "--memory=2Gi"
+      - "--cpu=2"
+      - "--concurrency=80"
+      - "--max-instances=10"
+      - "--min-instances=0"
+      - "--timeout=300"
+      - "--set-env-vars=REVERSE_PROXY=true,WORKERS=4,WORKER_CLASS=gevent,SKIP_DB_PING=true"
+      - "--set-secrets=DATABASE_URL=ctfd-database-url:latest,REDIS_URL=ctfd-redis-url:latest,SECRET_KEY=ctfd-secret-key:latest"
+    timeout: "600s"
+
+images:
+  - "gcr.io/$PROJECT_ID/$_SERVICE_NAME:latest"
+
+# Total timeout for the entire build
+timeout: "1800s"
+
+# Use high-performance machine for faster builds
+options:
+  machineType: "E2_HIGHCPU_8"
+  logging: CLOUD_LOGGING_ONLY
+
+# Substitutions (can be overridden in trigger settings)
+substitutions:
+  _SERVICE_NAME: "ctfd"
+  _REGION: "us-west1"
