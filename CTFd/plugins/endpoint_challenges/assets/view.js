@@ -47,63 +47,20 @@ CTFd.plugin.run((_CTFd) => {
         // Listen for the Bootstrap modal show event (safe even if Alpine isn't loaded yet)
         document.addEventListener('shown.bs.modal', function (event) {
             if (event.target && event.target.id === 'challenge-window') {
-                // Immediately reset any residual UI state
-                try {
-                    const $loading = $('#endpoint-loading');
-                    const $info = $('#endpoint-info');
-                    const $btn = $('#create-endpoint-btn');
-                    if ($loading.length) {
-                        $loading.removeClass('d-inline-block');
-                        $loading.hide();
-                    }
-                    if ($info.length) {
-                        $info.hide();
-                    }
-                    if ($btn && $btn.length) {
-                        $btn.show();
-                    }
-                } catch (e) { }
-                // Force re-check on each open and inject UI immediately
+                // Remove any endpoint UI injected for a previous challenge
+                $('#create-endpoint-btn').closest('.col-12.mb-3').remove();
+
                 currentChallengeId = null;
                 setTimeout(() => {
-                    try { ensureEndpointUI(); } catch (e) { }
                     checkForEndpointChallenge();
-                    // Fallback inline injection if still missing
-                    try {
-                        const $row = $('#challenge-window .submit-row');
-                        if ($row.length && $('#create-endpoint-btn').length === 0) {
-                            const endpointUI = `
-                                <div class="col-12 mb-3">
-                                    <div id="endpoint-info" class="alert alert-secondary" style="display: none;">
-                                        <strong>Endpoint Created:</strong>
-                                        <div id="endpoint-details"></div>
-                                    </div>
-
-                                    <button id="create-endpoint-btn" class="btn btn-primary me-2" onclick="createEndpoint()">
-                                        Create Endpoint
-                                    </button>
-
-                                    <div id="endpoint-loading" style="display: none;">
-                                        <div class="spinner-border spinner-border-sm" role="status">
-                                            <span class="sr-only">Creating endpoint...</span>
-                                        </div>
-                                        <span class="ms-2">Creating endpoint...</span>
-                                    </div>
-                                </div>
-                            `;
-                            $row.prepend(endpointUI);
-                        }
-                    } catch (e) { }
                 }, 100);
             }
         });
 
         function checkForEndpointChallenge() {
-            // Get challenge ID from the modal
             const challengeId = $('#challenge-id').val();
             if (challengeId && challengeId !== currentChallengeId) {
                 currentChallengeId = challengeId;
-                // Check if this is an endpoint challenge by making an API call
                 fetch(`/api/v1/challenges/${challengeId}`)
                     .then(response => response.json())
                     .then(data => {
@@ -112,15 +69,6 @@ CTFd.plugin.run((_CTFd) => {
                         }
                     })
                     .catch(err => console.log('Error checking challenge type:', err));
-            }
-        }
-
-        function ensureEndpointUI(retries = 30) {
-            const submitRow = $('.submit-row');
-            if (submitRow.length > 0) {
-                injectEndpointUI();
-            } else if (retries > 0) {
-                setTimeout(() => ensureEndpointUI(retries - 1), 100);
             }
         }
 
